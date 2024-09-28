@@ -1,0 +1,821 @@
+#! /usr/bin/perl
+
+########################################################################
+#
+#	Copyright (C) 2024  John E. Wulff
+#
+#	iCmines - Minesweeper game following the standard rules
+
+# Some ideas were taken from (C) 2014 Francesco Nidito
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights to
+# use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+# of the Software, and to permit persons to whom the Software is furnished to do
+# so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+########################################################################
+#
+# +=========================+==================================+=====================================+
+# |          MOUSE          |        COVERED SQUARE            |           UNCOVERED SQUARE          |
+# +===============+=========+==================================+=====================================+
+# | LEFT BUTTON   | PRESS   |  lower current square only       |  lower adjacent squares             |
+# |               |         |     unless flagged               |     unless uncovered or flagged     |
+# |               +---------+----------------------------------+-------------------------------------+
+# |               | RELEASE |  unless flagged                  |  if number == squares flagged       |
+# |               |         |    if mine (-1)  LOST GAME       |     show number of adjacent squares |
+# |               |         |    else if number == 0           |     if adjacent square == -1 LOST   |
+# |               |         |      repeat with new pos         |     if adjacent square == 0         |
+# |               |         |    else                          |        repeat with new pos          |
+# |               |         |      show number of this square  |  else raise adjacent squares        |
+# |               |         |                                  |     unless uncovered or flagged     |
+# +===============+=========+==================================+=====================================+
+# | MIDDLE BUTTON | PRESS   |  lower adjacent squares          |  lower adjacent squares             |
+# |               |         |  unless uncovered or flagged     |  unless uncovered or flagged        |
+# |               +---------+----------------------------------+-------------------------------------+
+# |               | RELEASE |  raise adjacent squares          |  if number == squares flagged       |
+# |               |         |     unless uncovered or flagged  |     show number of adjacent squares |
+# |               |         |                                  |     if adjacent square == -1 LOST   |
+# |               |         |                                  |     if adjacent square == 0         |
+# |               |         |                                  |        repeat with new pos          |
+# |               |         |                                  |  else raise adjacent squares        |
+# |               |         |                                  |     unless uncovered or flagged     |
+# +===============+=========+==================================+=====================================+
+# | RIGHT BUTTON  | PRESS   |        ---                       |                ---                  |
+# |               +---------+----------------------------------+-------------------------------------+
+# |               | RELEASE |  if clear flag mine (wrong!)     |                ---                  |
+# |               |         |  if flaggged ?                   |                                     |
+# |               |         |  if ? clear square               |                                     |
+# +===============+=========+==================================+=====================================+
+#
+########################################################################
+
+use strict;
+use warnings;
+
+use Tk;
+
+my $flagChar = "\x{2691}";	# 'F'   flag
+my $mineChar = "\x{2600}";	# '*'   mine
+my $boomChar = "\x{2620}";	# 'X'   boom mine
+my $noneChar = " ";		# ' '
+my $quesChar = "?";		# '?'
+
+my @circle = (
+    [  0,  1 ],
+    [  1,  1 ],
+    [  1,  0 ],
+    [  1, -1 ],
+    [  0, -1 ],
+    [ -1, -1 ],
+    [ -1,  0 ],
+    [ -1,  1 ],
+);
+my @colors =	('light gray', 'blue', 'dark green', 'brown', 'dark violet', 'red', 'blue', 'dark green', 'black');
+my $boldfont   = "-adobe-courier-bold-r-normal--24-100-100-100-m-90-iso8859-1";
+
+my @buttons =	();		# individual button address
+my @values =	();		# marks [r,c] to its content (-1 == mine,  0-8 number of adjacent mines)
+my @uncovered =	();
+my @flagged =	();
+my @moves =	();
+
+########################################################################
+#
+#	Initialization
+#
+########################################################################
+
+my $named = $0; $named =~ s#.*[/\\]##;
+format STDERR =
+Usage:
+    @<<<<<<[ -usth][ -r <rows>][ -c <columns>][ -m <mines>]
+	$named
+    -r <rows>    number of rows             (default 12)
+    -c <columns> number of columns in a row (default 12)
+    -m <mines>   number of mines            (default 19)
+    -u           allow undo after losing    (default no undo)
+    -s           show mines and hints at startup for debugging
+    -t           trace debug messages
+    -h           help, ouput this Usage text only
+           Key functions during or at end of game
+            n   play a new game
+            r   repeat the same game
+            u   undo last move after losing (or right mouse key)
+            q   quit the game
+Copyright (C) 2024  John E. Wulff          <immediateC@gmail.com>
+						     '@'
+$Id: iCmines 1.1 $ uses Tk-@<<<<<<<<<
+							$Tk::VERSION
+.
+
+########################################################################
+#	Handle all switch options
+########################################################################
+use vars qw($opt_r $opt_c $opt_m $opt_u $opt_s $opt_t $opt_h);
+use Getopt::Long qw(:config no_ignore_case bundling);
+GetOptions (
+    'r=i' => \$opt_r,
+    'c=i' => \$opt_c,
+    'm=i' => \$opt_m,
+    'u'   => \$opt_u,
+    's'   => \$opt_s,
+    't'   => \$opt_t,
+    'h'   => \$opt_h,
+);
+
+if ($opt_h) {
+    write STDERR; exit 0;	# -h, ouput Usage only
+}
+
+if ($opt_s) {
+    use Time::HiRes qw(usleep gettimeofday);
+}
+
+$opt_r = 12	unless defined $opt_r;	# default number of rows
+$opt_c = 12	unless defined $opt_c;	# default number of columns
+$opt_m = 19	unless defined $opt_m;	# default number of mines
+my $totalCount = $opt_r * $opt_c;
+die "rows, columns or mines < 1" if $opt_r < 1 or $opt_c < 1 or $opt_m < 1;
+die "mines >= rows * columns"     if $opt_m >= $totalCount;
+$totalCount -= $opt_m;			# only need to count uncovered squares without a mine
+my $info = '';				# info messages in status bar
+my ($uncoveredCount, $flaggedCount, $leftCount, $undoCount, $lost, $end, $x);
+
+########################################################################
+#	Main window
+########################################################################
+my $mw = MainWindow->new(-title => "$named $opt_r * $opt_c");
+$mw->resizable(0,0);		# disallow resizing
+$mw->protocol('WM_DELETE_WINDOW', \&quit_program);	# Windows (X) pressed
+
+########################################################################
+#	Info bar
+########################################################################
+my $infoBar = $mw->Label(-textvariable => \$info,
+			 -relief       => 'ridge',
+			)->grid(
+			    -row    => $opt_r,
+			    -column => 0,
+			    -columnspan => $opt_c,
+			    -sticky => 'nsew',
+			);
+
+########################################################################
+#	Set up game and key commands for repeats
+########################################################################
+srand(time());			# initalize random number generator
+build_game();			# generate playing field for all games
+new_game();			# initalize mines and hints for first game
+cover_game();			# cover the squares for first game
+
+$mw->bind('<Key-n>', sub {
+    new_game();			# initalize mines and hints for another game
+    cover_game();		# cover the squares for another game
+    print "\nNEW GAME\n";
+});
+$mw->bind('<Key-r>', sub {
+    cover_game();		# cover the squares for repeat same game
+    print "\nREPEAT GAME\n";
+});
+$mw->bind('<Key-u>', sub {
+    undo();			# undo last move after losing
+});
+$mw->bind('<Key-q>', \&quit_program);
+
+MainLoop;
+
+####### End of main program ############################################
+
+########################################################################
+#
+#	Generate playing field
+#
+########################################################################
+
+sub build_game {
+    my ($row, $column);
+    for ($row = 0; $row < $opt_r; $row++) {
+	for ($column = 0; $column < $opt_c; $column++) {
+	    my $frame  = $mw->Frame(
+		-relief       => 'groove',
+		-borderwidth  => 4,
+	    )->grid(
+		-row    => $row,
+		-column => $column,
+		-sticky => 'nsew',
+	    );
+	    my $button = $buttons[$row][$column] = $frame->Button(
+		-background => 'light gray',
+		-font       => $boldfont,
+		-text       => $noneChar,
+	    )->pack(-side => 'top', -expand => 1,);
+	    $button->bind('<ButtonPress-1>'   => [ \&pressButton1,   $row, $column ]);
+	    $button->bind('<ButtonRelease-1>' => [ \&releaseButton1, $row, $column ]);
+	    $button->bind('<ButtonPress-2>'   => [ \&pressButton2,   $row, $column ]);
+	    $button->bind('<ButtonRelease-2>' => [ \&releaseButton2, $row, $column ]);
+	    $button->bind('<ButtonRelease-3>' => [ \&releaseButton3, $row, $column ]);
+	}
+    }
+    if ($opt_s) {
+	########################################################################
+	#  Generate flat separator
+	########################################################################
+	for ($row = 0; $row < $opt_r; $row++) {
+	    my $frame  = $mw->Frame(
+		-relief       => 'groove',
+		-borderwidth  => 4,
+	    )->grid(
+		-row    => $row,
+		-column => $opt_c,
+		-sticky => 'nsew',
+	    );
+	    my $button = $buttons[$row][$opt_c] = $frame->Button(
+		-background => 'light gray',
+		-text       => ' ',
+		-relief     => 'flat',
+	    )->pack(-side => 'top', -expand => 1,);
+	}
+	########################################################################
+	#  Generate additional debugging field for showing all mines and hints
+	########################################################################
+	for ($row = 0; $row < $opt_r; $row++) {
+	    for ($column = $opt_c + 1; $column < $opt_c + 1 + $opt_c; $column++) {
+		my $frame  = $mw->Frame(
+		    -relief       => 'groove',
+		    -borderwidth  => 4,
+		)->grid(
+		    -row    => $row,
+		    -column => $column,
+		    -sticky => 'nsew',
+		);
+		my $button = $buttons[$row][$column] = $frame->Button(
+		    -background => 'light gray',
+		    -font       => $boldfont,
+		    -text       => $noneChar,
+		)->pack(-side => 'top', -expand => 1,);
+	    }
+	}
+    }
+} # build_game
+
+########################################################################
+#
+#	Initalize mines and hints in @values for a new game
+#
+########################################################################
+
+sub new_game {
+    my ($row, $column, $r, $c, $n, $neighbors);
+    ########################################################################
+    #  Clear all mines and hints
+    ########################################################################
+    for ($row = 0; $row < $opt_r; $row++) {
+	for ($column = 0; $column < $opt_c; $column++) {
+	    $values[$row][$column] = 0;		# empty square
+	}
+    }
+    ########################################################################
+    #  Generate random mines
+    ########################################################################
+    for (1..$opt_m) {
+	$r = int(rand($opt_r));
+	$c = int(rand($opt_c));
+	if ($values[$r][$c] == -1) {
+	    redo;				# do not place a 2nd mine here
+	} else {
+	    $values[$r][$c] = -1;		# place a mine
+	}
+    }
+    ########################################################################
+    #  Generate hints in circles around mines
+    ########################################################################
+    for ($row = 0; $row < $opt_r; $row++) {
+	for ($column = 0; $column < $opt_c; $column++) {
+	    if ($values[$row][$column] != -1) {
+		$neighbors = 0;
+		for ($n = 0; $n < 8; $n++) {
+		    if (($r = $row + $circle[$n][0]) >= 0 and $r < $opt_r and
+			($c = $column + $circle[$n][1]) >= 0 and $c < $opt_c) {
+			if ($values[$r][$c] == -1) {
+			    $neighbors++;	# square has a mine as neighbor
+			}
+		    }
+		}
+		$values[$row][$column] = $neighbors;
+	    }
+	}
+    }
+} # new_game
+
+########################################################################
+#
+#	Cover all mines and hints with a blank square
+#
+########################################################################
+
+sub cover_game {
+    my ($row, $column);
+    $uncoveredCount = $flaggedCount = $leftCount = $undoCount = $lost = $end = 0;
+    $infoBar->configure(-foreground => 'black');
+    $info = "Mines: $flaggedCount/$opt_m";
+    for ($row = 0; $row < $opt_r; $row++) {
+	for ($column = 0; $column < $opt_c; $column++) {
+	    $uncovered[$row][$column] = 0;	# covered square
+	    $flagged[$row][$column] = 0;	# no flag or question mark
+	    my $button = $buttons[$row][$column];
+	    $button->configure(-relief => 'raised');	# reset all squares to covered raised for new game
+	    $button->configure(-text => $noneChar);	# normal game
+	    $button->configure(-background => 'light gray');
+	    if ($opt_s) {
+		########################################################################
+		#  show all mines and hints for  additional debugging field
+		########################################################################
+		$button = $buttons[$row][$column + $opt_c + 1];
+		my $v = $values[$row][$column];
+		$button->configure(-relief => 'sunken');
+		my $showColor = 'light gray';
+		my $showChar = $v == -1 ?
+		    ($button->configure(-foreground => 'black'),
+		    $showColor = 'yellow',
+		    $mineChar) :
+		    $v == 0 ? $noneChar :
+			($button->configure(-foreground => $colors[$v]),
+			$v);
+		$button->configure(-background => $showColor);
+		$button->configure(-text       => $showChar);	# show all mines and hints
+	    }
+	}
+    }
+} # cover_game
+
+########################################################################
+#
+#	Lower or raise all squares adjacent to a given co-ordinate
+#	unless uncovered or flagged
+#	Square at co-ordinate is not lowered or raised
+#
+########################################################################
+
+sub lowerORraise {
+    my ($row, $column, $relief) = @_;
+    my ($r, $c, $n);
+    for ($n = 0; $n < 8; $n++) {
+	if (($r = $row + $circle[$n][0]) >= 0 and $r < $opt_r and
+	    ($c = $column + $circle[$n][1]) >= 0 and $c < $opt_c) {
+	    unless ($uncovered[$r][$c] or $flagged[$r][$c]) {
+		$buttons[$r][$c]->configure(-relief => $relief);
+	    }
+	}
+    }
+} # lowerORraise
+
+########################################################################
+#
+#	GAME WON
+#
+########################################################################
+
+sub gameWon {
+    my ($r, $c);
+    unless ($lost or $end) {
+	########################################################################
+	#  Flag all remaining unflagged mines
+	#  Uncover any remaining covered squares
+	########################################################################
+	print " FINAL SCAN" if $opt_t;
+	for ($r = 0; $r < $opt_r; $r++) {
+	    for ($c = 0; $c < $opt_c; $c++) {
+		unless ($flagged[$r][$c] == 1) {
+		    my $v = $values[$r][$c];
+		    my $button = $buttons[$r][$c];
+		    if ($v == -1) {
+			$flagged[$r][$c] = 1;	# 1 = flag
+			$button->configure(-foreground => 'red');
+			$button->configure(-text       => $flagChar);
+			print "  $r:$c->F" if $opt_t;
+			$flaggedCount++;
+		    } elsif (not $uncovered[$r][$c]) {
+			$button->configure(-relief => 'sunken');
+			$uncovered[$r][$c] = 1;		# uncover unflagged squares
+			$uncoveredCount++;
+			$button->configure(-foreground => $colors[$v]);
+			if (($v = $values[$r][$c]) >= 1) {
+			    $button->configure(-text => $v);	# show numbers
+			    print "  $r:$c->$v" if $opt_t;
+			} else {
+			    $button->configure(-text => $noneChar);
+			}
+		    }
+		}
+	    }
+	}
+	$infoBar->configure(-foreground => 'red');
+	my $undoTail = $undoCount > 1 ? "s" : "";
+	my $undoText = $undoCount ? " after $undoCount undo$undoTail" : "";
+	$info = "YOU HAVE WON$undoText!!";
+	print "\nYOU HAVE WON$undoText!!\n";
+	$end = 1;
+    }
+} # gameWon
+
+########################################################################
+#
+#	GAME LOST
+#
+########################################################################
+
+sub gameLost {
+    my ($row, $column, $message) = @_;
+    my ($r, $c);
+    print "$message\n";;
+    ########################################################################
+    #	Show all remaining mines unless -u flag is set (undo option)
+    #  Show all flags that do not actually hide a mine as a 'boom mine'
+    ########################################################################
+    for ($r = 0; $r < $opt_r; $r++) {
+	for ($c = 0; $c < $opt_c; $c++) {
+	    my $v = $values[$r][$c];
+	    my $button = $buttons[$r][$c];
+	    if ($v == -1) {
+		if ($r == $row and $c == $column or not $flagged[$r][$c] and not $opt_u) {
+		    $button->configure(-relief     => 'sunken');
+		    $button->configure(-foreground => 'black');
+		    if ($r == $row and $c == $column) {
+			$button->configure(-background => 'orange');
+		    } else {
+			$button->configure(-background => 'yellow');
+		    }
+		    $button->configure(-text => $mineChar);
+		}
+	    } elsif ($flagged[$r][$c]) {
+		$button->configure(-text => $boomChar);	# flagged but not mine remains red
+	    }
+	}
+    }
+    $infoBar->configure(-foreground => 'blue');
+    $info = "YOU HAVE LOST";
+    $lost = $end = 1;
+} # gameLost
+
+########################################################################
+#
+#	Uncover and show number of adjacent mines for covered and
+#	unflaged squares in a circle around current co-ordinates.
+#	Repeat recursively for any blank square found in the circle.
+#
+########################################################################
+
+sub repeatCircle {
+    my ($row, $column) = @_;
+    unless ($end) {
+	my ($r, $c, $n, $v, $buttonM);
+	$x++, printf("\n%*s = %2d c = %2d v =%2d u = %3d f = %3d repeat circle", $x, 'r', $row, $column, $values[$row][$column], $uncoveredCount, $flaggedCount) if $opt_t;
+	$buttonM = $buttons[$row][$column];
+	$buttonM->configure(-relief => 'sunken');
+	if ($opt_s) {
+	    $buttonM->configure(-background => 'yellow');
+	    $buttonM->update;
+	    usleep(250_000);		# sleep 250 ms
+	}
+	for ($n = 0; $n < 8; $n++) {
+	    if (($r = $row + $circle[$n][0]) >= 0 and $r < $opt_r and
+		($c = $column + $circle[$n][1]) >= 0 and $c < $opt_c) {
+		unless ($uncovered[$r][$c] or $flagged[$r][$c]) {
+		    my $button = $buttons[$r][$c];
+		    $button->configure(-relief => 'sunken');
+		    $uncovered[$r][$c] = 1;		# uncover unflagged squares in circle including blank squares
+		    push(@moves, [$r, $c]) if $opt_u;
+		    if (($v = $values[$r][$c]) >= 1) {
+			$button->configure(-foreground => $colors[$v]);
+			$button->configure(-text       => $v);	# show adjacent numbers
+			print "  $r:$c->$v" if $opt_t;
+			if ($opt_s) {
+			    $button->update;
+			    usleep(500_000);		# sleep 500 ms
+			}
+		    } elsif ($v == 0) {
+			repeatCircle($r, $c);		# recursive show around blank square
+		    } elsif ($v == -1) {
+			gameLost($r, $c, "\nUnflagged mine found at $r:$c - GAME LOST");
+		    }
+		    if (++$uncoveredCount >= $totalCount) {
+			gameWon();
+		    }
+		}
+	    }
+	}
+	if ($opt_s) {
+	    usleep(250_000);		# sleep 250 ms
+	    $buttonM->configure(-background => 'light gray');
+	    $buttonM->update;
+	}
+	printf("\n%*s = %2d c = %2d v =%2d u = %3d f = %3d end    circle", $x, 'r', $row, $column, $values[$row][$column], $uncoveredCount, $flaggedCount), $x-- if $opt_t;
+	print "\n" if $end and $opt_t;
+    }
+} # repeatCircle
+
+########################################################################
+#
+#	Scan uncovered adjacent squares
+#
+########################################################################
+
+sub scanAdjacent {
+    my ($row, $column) = @_;
+    my ($r, $c, $n, $v);
+    ########################################################################
+    #  Count how many adjacent squares in a circle around current
+    #  coordinates are flagged
+    ########################################################################
+    my $fc = 0;
+    for ($n = 0; $n < 8; $n++) {
+	if (($r = $row + $circle[$n][0]) >= 0 and $r < $opt_r and
+	    ($c = $column + $circle[$n][1]) >= 0 and $c < $opt_c) {
+	    if ($flagged[$r][$c] == 1) {
+		$fc++
+	    }
+	}
+    }
+    if (($v = $values[$row][$column]) == $fc or $v == 0) {
+	$x = 1 if $opt_t;
+	repeatCircle($row, $column);	# recursive show adjacent squares
+    } else {
+	lowerORraise($row, $column, 'raised');
+    }
+} # scanAdjacent
+
+########################################################################
+#
+#	Left button pressed closure
+#
+########################################################################
+
+sub pressButton1 {
+    my (undef, $row, $column) = @_;
+    unless ($end) {
+	@moves = () if $opt_u;
+	if ($uncovered[$row][$column]) {
+	    lowerORraise($row, $column, 'sunken');
+	} elsif ($flagged[$row][$column]) {
+	    my $button = $buttons[$row][$column];
+	    $button->configure(-relief => 'raised');
+	}
+    }
+} # pressButton1
+
+########################################################################
+#
+#	Left button released closure
+#
+########################################################################
+
+sub releaseButton1 {
+    my (undef, $row, $column) = @_;
+    unless ($end) {
+	printf("\nr = %2d c = %2d v =%2d u = %3d f = %3d left released", $row, $column, $values[$row][$column], $uncoveredCount, $flaggedCount) if $opt_t;
+	if ($uncovered[$row][$column]) {
+	    scanAdjacent($row, $column);
+	} elsif (not $flagged[$row][$column]) {
+	    my $v = $values[$row][$column];
+	    $uncovered[$row][$column] = 1;		# uncover uncovered square
+	    push(@moves, [$row, $column]) if $opt_u;
+	    my $button = $buttons[$row][$column];
+	    if ($v == -1) {
+		if ($leftCount) {
+		    gameLost($row, $column, "\nUnflagged mine pressed at row $row column $column - GAME LOST");
+		    $uncoveredCount++;
+		    return;
+		}
+		########################################################################
+		#  First move hit a mine - Remove mine at current coordinates and move
+		#  mine to a different random position
+		########################################################################
+		my ($r, $c, $n, $neighbors, $rNew, $cNew);
+		########################################################################
+		#  Generate one new random mine at a different position
+		#  Keep mine at old position for now so it is not selected again
+		########################################################################
+		for (1..1) {
+		    $rNew = int(rand($opt_r));
+		    $cNew = int(rand($opt_c));
+		    if ($values[$rNew][$cNew] == -1) {
+			redo;				# do not place a 2nd mine here or in previous position
+		    } else {
+			$values[$rNew][$cNew] = -1;	# place a new mine
+		    }
+		}
+		########################################################################
+		#  Adjust hints in circle around previous mine
+		########################################################################
+		$neighbors = 0;
+		for ($n = 0; $n < 8; $n++) {
+		    if (($r = $row + $circle[$n][0]) >= 0 and $r < $opt_r and
+			($c = $column + $circle[$n][1]) >= 0 and $c < $opt_c) {
+			if ($values[$r][$c] == -1) {
+			    $neighbors++;		# square has a mine as neighbor
+			} elsif ($values[$r][$c] >= 1) {
+			    $values[$r][$c]--;		# reduce neighbour count by 1
+			} else {
+			    die "LOGIC ERROR - every square next to removed mine is non-blank";
+			}
+		    }
+		}
+		########################################################################
+		#  Adjust hints in circle around new mine
+		########################################################################
+		for ($n = 0; $n < 8; $n++) {
+		    if (($r = $rNew + $circle[$n][0]) >= 0 and $r < $opt_r and
+			($c = $cNew + $circle[$n][1]) >= 0 and $c < $opt_c) {
+			if ($values[$r][$c] != -1) {
+			    $values[$r][$c]++;		# increase neighbour count by 1
+			}
+		    }
+		}
+		########################################################################
+		#   Clear mine from old position
+		########################################################################
+		$v = $values[$row][$column] = $neighbors;
+		if ($opt_s) {
+		    cover_game();			# show mine adjustment in debugging field
+		    $uncovered[$row][$column] = 1;	# uncover uncovered square again
+		}
+		printf("\nr = %2d c = %2d v =%2d u = %3d f = %3d Mine at %d:%d moved to %d:%d",
+		    $row, $column, $values[$row][$column], $uncoveredCount, $flaggedCount, $row, $column, $rNew, $cNew) if $opt_t;
+	    }	# end of moved mine after finding mine on first move
+	    if ($v == 0) {
+		$x = 1 if $opt_t;
+		repeatCircle($row, $column);		# recursive show around blank square
+	    } else {
+		$button->configure(-relief     => 'sunken');
+		$button->configure(-foreground => $colors[$v]);
+		$button->configure(-text       => $v);	# show number of this square
+		print "  $row:$column->$v" if $opt_t;
+	    }
+	    if (++$uncoveredCount >= $totalCount) {
+		gameWon();
+	    }
+	}
+	$leftCount++;
+    }
+} # releaseButton1
+
+########################################################################
+#
+#	Middle button pressed closure
+#
+########################################################################
+
+sub pressButton2 {
+    my (undef, $row, $column) = @_;
+    unless ($end) {
+	@moves = () if $opt_u;
+	lowerORraise($row, $column, 'sunken');
+    }
+} # pressButton2
+
+########################################################################
+#
+#	Middle button released closure
+#
+########################################################################
+
+sub releaseButton2 {
+    my (undef, $row, $column) = @_;
+    unless ($end) {
+	printf("\nr = %2d c = %2d v =%2d u = %3d f = %3d middle released", $row, $column, $values[$row][$column], $uncoveredCount, $flaggedCount) if $opt_t;
+	if ($uncovered[$row][$column]) {
+	    scanAdjacent($row, $column);
+	} else {
+	    lowerORraise($row, $column, 'raised');
+	}
+    }
+} # releaseButton2
+
+########################################################################
+#
+#	Undo last move if game is lost - allows continuation of the game
+#	Only available if started with the -u flag
+#
+########################################################################
+
+sub undo {
+    if ($opt_u and $lost) {
+	$undoCount++;
+	my ($moveR, $r, $c);
+	print "\nUNDO LAST MOVE ";
+	########################################################################
+	#  Cover all squares uncovered in last move
+	########################################################################
+	while (defined ($moveR = pop(@moves))) {
+	    my ($r, $c) = @$moveR;
+	    $uncovered[$r][$c] = 0;		# cover square
+	    $uncoveredCount--;
+	    my $button = $buttons[$r][$c];
+	    $button->configure(-relief => 'raised');
+	    $button->configure(-text => $noneChar);
+	    $button->configure(-background => 'light gray');
+	    print " $r:$c";
+	}
+	########################################################################
+	#  Clear all remaining boom mine flag markings
+	#  These are flagged squares which do not actually cover a mine
+	########################################################################
+	for ($r = 0; $r < $opt_r; $r++) {
+	    for ($c = 0; $c < $opt_c; $c++) {
+		my $v = $values[$r][$c];
+		my $button = $buttons[$r][$c];
+		if ($v != -1 and $flagged[$r][$c]) {
+		    $button->configure(-text => $noneChar);
+		    $button->configure(-background => 'light gray');
+		    $flagged[$r][$c] = 0;
+		    $flaggedCount--;
+		    print " boom $r:$c";
+		}
+	    }
+	}
+	$lost = $end = 0;	# Continue game
+	print "\n";
+    }
+} # undo
+
+########################################################################
+#
+#	Right button released closure
+#
+########################################################################
+
+sub releaseButton3 {
+    my (undef, $row, $column) = @_;
+    if ($end) {
+	undo();
+    } else {
+	printf("\nr = %2d c = %2d v =%2d u = %3d f = %3d right released", $row, $column, $values[$row][$column], $uncoveredCount, $flaggedCount) if $opt_t;
+	unless ($uncovered[$row][$column]) {
+	    my $button = $buttons[$row][$column];
+	    if ($flagged[$row][$column] == 0) {
+		$flagged[$row][$column] = 1;	# 1 = flag
+		$button->configure(-foreground => 'red');
+		$button->configure(-text       => $flagChar);
+		print "  $row:$column->F" if $opt_t;
+		if (++$flaggedCount >= $opt_m) {
+		    ########################################################################
+		    #  All mines flagged
+		    #  Check for any mines not flagged correctly
+		    ########################################################################
+		    my ($r, $c, $r1, $c1);
+		    for ($r = 0; $r < $opt_r; $r++) {
+			for ($c = 0; $c < $opt_c; $c++) {
+			    my $v = $values[$r][$c];
+			    my $button = $buttons[$r][$c];
+			    if ($v == -1 and $flagged[$r][$c] != 1) {
+				push(@moves, [$r, $c]) if $opt_u;
+				($r1, $c1) = ($r, $c);
+				$lost = 1;
+			    }
+			}
+		    }
+		    if ($lost) {
+			gameLost($r1, $c1, "\nWrong mine flagged at row $r1 column $c1 - GAME LOST");
+		    } else {
+			gameWon();
+		    }
+		    return;
+		}
+	    } elsif ($flagged[$row][$column] == 1) {
+		$flagged[$row][$column] = 2;	# 2 = "?"
+		$button->configure(-foreground => 'black');
+		$button->configure(-text       => $quesChar);
+		$flaggedCount--;
+	    } else {
+		$flagged[$row][$column] = 0;	# 0 = clear
+		$button->configure(-text       => $noneChar);
+	    }
+	    $info = "Mines: $flaggedCount/$opt_m";
+	}						# nothing to do if uncovered
+    }
+} # releaseButton3
+
+########################################################################
+#
+#	Quit program
+#
+########################################################################
+
+sub quit_program {
+    print "\nQUIT GAME\n";
+    $mw->destroy() if $mw;
+    exit(0);
+} # quit_program
