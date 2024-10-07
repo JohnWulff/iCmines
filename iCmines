@@ -66,6 +66,7 @@ use strict;
 use warnings;
 
 use Tk;
+use Time::HiRes qw(usleep gettimeofday);
 
 my $flagChar = "\x{2691}";	# 'F'   flag
 my $mineChar = "\x{2600}";	# '*'   mine
@@ -117,7 +118,7 @@ Usage:
             q   quit the game
 Copyright (C) 2024  John E. Wulff          <immediateC@gmail.com>
 						     '@'
-$Id: iCmines 1.1 $ uses Tk-@<<<<<<<<<
+$Id: iCmines 1.2 $ uses Tk-@<<<<<<<<<
 							$Tk::VERSION
 .
 
@@ -140,10 +141,6 @@ if ($opt_h) {
     write STDERR; exit 0;	# -h, ouput Usage only
 }
 
-if ($opt_s) {
-    use Time::HiRes qw(usleep gettimeofday);
-}
-
 $opt_r = 12	unless defined $opt_r;	# default number of rows
 $opt_c = 12	unless defined $opt_c;	# default number of columns
 $opt_m = 19	unless defined $opt_m;	# default number of mines
@@ -152,7 +149,7 @@ die "rows, columns or mines < 1" if $opt_r < 1 or $opt_c < 1 or $opt_m < 1;
 die "mines >= rows * columns"     if $opt_m >= $totalCount;
 $totalCount -= $opt_m;			# only need to count uncovered squares without a mine
 my $info = '';				# info messages in status bar
-my ($uncoveredCount, $flaggedCount, $leftCount, $undoCount, $lost, $end, $x);
+my ($uncoveredCount, $flaggedCount, $leftCount, $t0, $undoCount, $lost, $end, $x);
 
 ########################################################################
 #	Main window
@@ -218,7 +215,7 @@ sub build_game {
 		-sticky => 'nsew',
 	    );
 	    my $button = $buttons[$row][$column] = $frame->Button(
-		-background => 'light gray',
+		-background => 'gray',
 		-font       => $boldfont,
 		-text       => $noneChar,
 	    )->pack(-side => 'top', -expand => 1,);
@@ -338,7 +335,7 @@ sub cover_game {
 	    my $button = $buttons[$row][$column];
 	    $button->configure(-relief => 'raised');	# reset all squares to covered raised for new game
 	    $button->configure(-text => $noneChar);	# normal game
-	    $button->configure(-background => 'light gray');
+	    $button->configure(-background => 'gray');
 	    if ($opt_s) {
 		########################################################################
 		#  show all mines and hints for  additional debugging field
@@ -401,6 +398,7 @@ sub gameWon {
 		unless ($flagged[$r][$c] == 1) {
 		    my $v = $values[$r][$c];
 		    my $button = $buttons[$r][$c];
+		    $button->configure(-background => 'light gray');
 		    if ($v == -1) {
 			$flagged[$r][$c] = 1;	# 1 = flag
 			$button->configure(-foreground => 'red');
@@ -408,7 +406,7 @@ sub gameWon {
 			print "  $r:$c->F" if $opt_t;
 			$flaggedCount++;
 		    } elsif (not $uncovered[$r][$c]) {
-			$button->configure(-relief => 'sunken');
+			$button->configure(-relief     => 'sunken');
 			$uncovered[$r][$c] = 1;		# uncover unflagged squares
 			$uncoveredCount++;
 			$button->configure(-foreground => $colors[$v]);
@@ -422,11 +420,24 @@ sub gameWon {
 		}
 	    }
 	}
+	my ($undoTail, $undoText, $t1, $min, $sec, $usec, $timeText);
 	$infoBar->configure(-foreground => 'red');
-	my $undoTail = $undoCount > 1 ? "s" : "";
-	my $undoText = $undoCount ? " after $undoCount undo$undoTail" : "";
-	$info = "YOU HAVE WON$undoText!!";
-	print "\nYOU HAVE WON$undoText!!\n";
+	$undoTail = $undoCount > 1 ? "s" : "";
+	$undoText = $undoCount ? " after $undoCount undo$undoTail" : "";
+	$t1 = [gettimeofday()];
+	$sec =  $t1->[0] - $t0->[0];
+	$usec = $t1->[1] - $t0->[1];
+	if ($usec < 0) {
+	    $sec--;
+	    $usec += 1_000_000;
+	}
+	$sec ++ if $usec >= 500_000;
+	$min = int($sec / 60);
+	$sec = $sec % 60;
+	$undoTail = $min != 1 ? "s" : "";
+	$timeText = sprintf(" in %d minute%s %d seconds", $min, $undoTail, $sec);
+	$info = "YOU HAVE WON$timeText$undoText!!";
+	print "\nYOU HAVE WON$timeText$undoText!!\n";
 	$end = 1;
     }
 } # gameWon
@@ -484,18 +495,21 @@ sub repeatCircle {
 	my ($r, $c, $n, $v, $buttonM);
 	$x++, printf("\n%*s = %2d c = %2d v =%2d u = %3d f = %3d repeat circle", $x, 'r', $row, $column, $values[$row][$column], $uncoveredCount, $flaggedCount) if $opt_t;
 	$buttonM = $buttons[$row][$column];
-	$buttonM->configure(-relief => 'sunken');
+	$buttonM->configure(-relief     => 'sunken');
 	if ($opt_s) {
 	    $buttonM->configure(-background => 'yellow');
 	    $buttonM->update;
 	    usleep(250_000);		# sleep 250 ms
+	} else {
+	    $buttonM->configure(-background => 'light gray');
 	}
 	for ($n = 0; $n < 8; $n++) {
 	    if (($r = $row + $circle[$n][0]) >= 0 and $r < $opt_r and
 		($c = $column + $circle[$n][1]) >= 0 and $c < $opt_c) {
 		unless ($uncovered[$r][$c] or $flagged[$r][$c]) {
 		    my $button = $buttons[$r][$c];
-		    $button->configure(-relief => 'sunken');
+		    $button->configure(-relief     => 'sunken');
+		    $button->configure(-background => 'light gray');
 		    $uncovered[$r][$c] = 1;		# uncover unflagged squares in circle including blank squares
 		    push(@moves, [$r, $c]) if $opt_u;
 		    if (($v = $values[$r][$c]) >= 1) {
@@ -593,6 +607,7 @@ sub releaseButton1 {
 	    $uncovered[$row][$column] = 1;		# uncover uncovered square
 	    push(@moves, [$row, $column]) if $opt_u;
 	    my $button = $buttons[$row][$column];
+	    $t0 = [gettimeofday()] if $leftCount == 0;	# start time of program
 	    if ($v == -1) {
 		if ($leftCount) {
 		    gameLost($row, $column, "\nUnflagged mine pressed at row $row column $column - GAME LOST");
@@ -660,6 +675,7 @@ sub releaseButton1 {
 		repeatCircle($row, $column);		# recursive show around blank square
 	    } else {
 		$button->configure(-relief     => 'sunken');
+		$button->configure(-background => 'light gray');
 		$button->configure(-foreground => $colors[$v]);
 		$button->configure(-text       => $v);	# show number of this square
 		print "  $row:$column->$v" if $opt_t;
@@ -726,7 +742,7 @@ sub undo {
 	    my $button = $buttons[$r][$c];
 	    $button->configure(-relief => 'raised');
 	    $button->configure(-text => $noneChar);
-	    $button->configure(-background => 'light gray');
+	    $button->configure(-background => 'gray');
 	    print " $r:$c";
 	}
 	########################################################################
@@ -739,7 +755,7 @@ sub undo {
 		my $button = $buttons[$r][$c];
 		if ($v != -1 and $flagged[$r][$c]) {
 		    $button->configure(-text => $noneChar);
-		    $button->configure(-background => 'light gray');
+		    $button->configure(-background => 'gray');
 		    $flagged[$r][$c] = 0;
 		    $flaggedCount--;
 		    print " boom $r:$c";
@@ -768,6 +784,7 @@ sub releaseButton3 {
 	    if ($flagged[$row][$column] == 0) {
 		$flagged[$row][$column] = 1;	# 1 = flag
 		$button->configure(-foreground => 'red');
+		$button->configure(-background => 'light gray');
 		$button->configure(-text       => $flagChar);
 		print "  $row:$column->F" if $opt_t;
 		if (++$flaggedCount >= $opt_m) {
@@ -802,6 +819,7 @@ sub releaseButton3 {
 	    } else {
 		$flagged[$row][$column] = 0;	# 0 = clear
 		$button->configure(-text       => $noneChar);
+		$button->configure(-background => 'gray');
 	    }
 	    $info = "Mines: $flaggedCount/$opt_m";
 	}						# nothing to do if uncovered
