@@ -65,9 +65,10 @@
 use strict;
 use warnings;
 
-use Tk;
+use Tk 8.000;
 use Time::HiRes qw(usleep gettimeofday);
 
+my $id = '$Id: iCmines 1.4 $';
 my $flagChar = "\x{2691}";	# 'F'   flag
 my $mineChar = "\x{2600}";	# '*'   mine
 my $boomChar = "\x{2620}";	# 'X'   boom mine
@@ -107,20 +108,20 @@ Usage:
     -r <rows>    number of rows             (default 12)
     -c <columns> number of columns in a row (default 12)
     -m <mines>   number of mines            (default 19)
-    -u           allow undo after losing    (default no undo)
+    -u           allow undo after losing    (default no undo or hint)
     -s           show mines and hints in a parallel debugging field
     -t           trace debug messages
     -h           help, ouput this Usage text only
            Key functions during or at end of game
             n   play a new game
             r   repeat the same game
-            h   show one mine as a hint
-            u   undo last move after losing (or right mouse key)
+            h   show one mine as a hint     (requires -u option)
+            u   undo last move after losing (requires -u option)
             q   quit the game
 Copyright (C) 2024  John E. Wulff          <immediateC@gmail.com>
 						     '@'
-$Id: iCmines 1.3 $ uses Tk-@<<<<<<<<<
-							$Tk::VERSION
+@<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< uses Tk-@<<<<<<<<<
+$id,                                                                      $Tk::VERSION
 .
 
 ########################################################################
@@ -160,6 +161,55 @@ $mw->resizable(0,0);		# disallow resizing
 $mw->protocol('WM_DELETE_WINDOW', \&quit_program);	# Windows (X) pressed
 
 ########################################################################
+#	Tk8 Menu bar
+########################################################################
+my $menubar = $mw->Menu;
+$mw->configure(-menu => $menubar);
+
+########################################################################
+#	New menu button
+########################################################################
+$menubar->command(-label => "~New",
+		  -command => \&new);
+
+########################################################################
+#	Repeat menu button
+########################################################################
+$menubar->command(-label => "~Repeat",
+		  -command => \&repeat);
+
+########################################################################
+#	Hint menu button (disabled unless -u uption)
+########################################################################
+my $h = $menubar->command(-label => "~Hint",
+			  -command => \&hint);
+$h->configure(-state => 'disabled') unless $opt_u;
+
+########################################################################
+#	Undo menu button (disabled unless -u uption)
+########################################################################
+my $u = $menubar->command(-label => "~Undo",
+			  -command => \&undo);
+$u->configure(-state => 'disabled') unless $opt_u;
+
+########################################################################
+#	Quit menu button
+########################################################################
+$menubar->command(-label => "~Quit",
+		  -command => \&quit_program);
+
+########################################################################
+#	Finally, the Help menu items.
+########################################################################
+
+my $help = $menubar->cascade(-label => '~Help');
+$help->command(-label => 'Version', 
+         -command => sub {print "Version: $id\n              uses Tk-$Tk::VERSION\n"});
+$help->separator;
+$help->command(-label => 'About',   
+         -command => sub {print "About\n"});
+
+########################################################################
 #	Info bar
 ########################################################################
 my $infoBar = $mw->Label(-textvariable => \$info,
@@ -179,15 +229,8 @@ build_game();			# generate playing field for all games
 new_game();			# initalize mines and hints for first game
 cover_game();			# cover the squares for first game
 
-$mw->bind('<Key-n>', sub {
-    new_game();			# initalize mines and hints for another game
-    cover_game();		# cover the squares for another game
-    print "\nNEW GAME\n" if $opt_t;
-});
-$mw->bind('<Key-r>', sub {
-    cover_game();		# cover the squares for repeat same game
-    print "\nREPEAT GAME\n" if $opt_t;
-});
+$mw->bind('<Key-n>', \&new);	# initialize and cover squares for a new game
+$mw->bind('<Key-r>', \&repeat);	# cover squares for a repeat of previous game
 $mw->bind('<Key-h>', \&hint);	# show one mine as a hint
 $mw->bind('<Key-u>', \&undo);	# undo last move after losing
 $mw->bind('<Key-q>', \&quit_program);
@@ -357,6 +400,29 @@ sub cover_game {
 	}
     }
 } # cover_game
+
+########################################################################
+#
+#	Initialize and cover squares for a new game
+#
+########################################################################
+
+sub new {
+    new_game();			# initalize mines and hints for a new game
+    cover_game();		# cover the squares for a new game
+    print "\nNEW GAME\n" if $opt_t;
+} # new
+
+########################################################################
+#
+#	Cover the squares for repeat of previous game
+#
+########################################################################
+
+sub repeat {
+    cover_game();		# cover the squares for repeat of previous game
+    print "\nREPEAT GAME\n" if $opt_t;
+} # repeat
 
 ########################################################################
 #
@@ -730,7 +796,7 @@ sub releaseButton2 {
 ########################################################################
 
 sub hint {
-    if ($uncoveredCount < $totalCount) {
+    if ($opt_u and $uncoveredCount < $totalCount) {
 	my ($r, $c);
 	for (;;) {
 	    $r = int(rand($opt_r));
@@ -815,55 +881,51 @@ sub undo {
 
 sub releaseButton3 {
     my (undef, $row, $column) = @_;
-    if ($end) {
-	undo();
-    } else {
-	printf("\nr = %2d c = %2d v =%2d u = %3d f = %3d right released", $row, $column, $values[$row][$column], $uncoveredCount, $flaggedCount) if $opt_t;
-	unless ($uncovered[$row][$column]) {
-	    my $button = $buttons[$row][$column];
-	    if ($flagged[$row][$column] == 0) {
-		$flagged[$row][$column] = 1;	# 1 = flag
-		$button->configure(-foreground => 'red');
-		$button->configure(-background => 'light gray');
-		$button->configure(-text       => $flagChar);
-		print "  $row:$column->F" if $opt_t;
-		if (++$flaggedCount >= $opt_m) {
-		    ########################################################################
-		    #  All mines flagged
-		    #  Check for any mines not flagged correctly
-		    ########################################################################
-		    my ($r, $c, $r1, $c1);
-		    for ($r = 0; $r < $opt_r; $r++) {
-			for ($c = 0; $c < $opt_c; $c++) {
-			    my $v = $values[$r][$c];
-			    my $button = $buttons[$r][$c];
-			    if ($v == -1 and $flagged[$r][$c] != 1) {
-				push(@moves, [$r, $c]) if $opt_u;
-				($r1, $c1) = ($r, $c);
-				$lost = 1;
-			    }
+    printf("\nr = %2d c = %2d v =%2d u = %3d f = %3d right released", $row, $column, $values[$row][$column], $uncoveredCount, $flaggedCount) if $opt_t;
+    unless ($uncovered[$row][$column]) {
+	my $button = $buttons[$row][$column];
+	if ($flagged[$row][$column] == 0) {
+	    $flagged[$row][$column] = 1;	# 1 = flag
+	    $button->configure(-foreground => 'red');
+	    $button->configure(-background => 'light gray');
+	    $button->configure(-text       => $flagChar);
+	    print "  $row:$column->F" if $opt_t;
+	    if (++$flaggedCount >= $opt_m) {
+		########################################################################
+		#  All mines flagged
+		#  Check for any mines not flagged correctly
+		########################################################################
+		my ($r, $c, $r1, $c1);
+		for ($r = 0; $r < $opt_r; $r++) {
+		    for ($c = 0; $c < $opt_c; $c++) {
+			my $v = $values[$r][$c];
+			my $button = $buttons[$r][$c];
+			if ($v == -1 and $flagged[$r][$c] != 1) {
+			    push(@moves, [$r, $c]) if $opt_u;
+			    ($r1, $c1) = ($r, $c);
+			    $lost = 1;
 			}
 		    }
-		    if ($lost) {
-			gameLost($r1, $c1, "\nWrong mine flagged at row $r1 column $c1 - GAME LOST");
-		    } else {
-			gameWon();
-		    }
-		    return;
 		}
-	    } elsif ($flagged[$row][$column] == 1) {
-		$flagged[$row][$column] = 2;	# 2 = "?"
-		$button->configure(-foreground => 'black');
-		$button->configure(-text       => $quesChar);
-		$flaggedCount--;
-	    } else {
-		$flagged[$row][$column] = 0;	# 0 = clear
-		$button->configure(-text       => $noneChar);
-		$button->configure(-background => 'gray');
+		if ($lost) {
+		    gameLost($r1, $c1, "\nWrong mine flagged at row $r1 column $c1 - GAME LOST");
+		} else {
+		    gameWon();
+		}
+		return;
 	    }
-	    $info = "Mines: $flaggedCount/$opt_m";
-	}						# nothing to do if uncovered
-    }
+	} elsif ($flagged[$row][$column] == 1) {
+	    $flagged[$row][$column] = 2;	# 2 = "?"
+	    $button->configure(-foreground => 'black');
+	    $button->configure(-text       => $quesChar);
+	    $flaggedCount--;
+	} else {
+	    $flagged[$row][$column] = 0;	# 0 = clear
+	    $button->configure(-text       => $noneChar);
+	    $button->configure(-background => 'gray');
+	}
+	$info = "Mines: $flaggedCount/$opt_m";
+    }						# nothing to do if uncovered
 } # releaseButton3
 
 ########################################################################
